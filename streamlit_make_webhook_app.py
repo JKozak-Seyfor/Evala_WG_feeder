@@ -9,9 +9,10 @@ import streamlit as st
 
 
 # Expected Streamlit secrets:
-# MAKE_WEBHOOK_URL = "https://hook.eu2.make.com/..."
-# MAKE_API_KEY = "..."                          # optional, sent as a header
-# MAKE_API_KEY_HEADER = "X-API-Key"              # optional, defaults to X-API-Key
+# MAKE_WEBHOOK_URL_FEEDER = "https://hook.eu2.make.com/..."  # Excel data webhook
+# MAKE_WEBHOOK_URL_SWITCH = "https://hook.eu2.make.com/..."  # Šelmostroj trigger webhook
+# MAKE_API_KEY = "..."                                      # optional, sent as a header
+# MAKE_API_KEY_HEADER = "X-API-Key"                          # optional, defaults to X-API-Key
 
 
 def get_secret(name: str, default: str | None = None) -> str | None:
@@ -81,6 +82,14 @@ def build_payload(
     }
 
 
+def build_switch_payload() -> Dict[str, Any]:
+    return {
+        "source": "streamlit_sidebar_switch",
+        "event": "spustit_selmostroj",
+        "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
 def build_headers(api_key: str | None, api_key_header: str | None) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
 
@@ -90,7 +99,7 @@ def build_headers(api_key: str | None, api_key_header: str | None) -> Dict[str, 
     return headers
 
 
-def send_to_make(
+def post_to_make(
     webhook_url: str,
     payload: Dict[str, Any] | List[Dict[str, Any]],
     api_key: str | None = None,
@@ -115,12 +124,43 @@ st.set_page_config(
 st.title("Excel -> Make webhook")
 st.write("Nahrajte Excel, zkontrolujte data a odešlete je jako JSON na webhook v Make.")
 
-webhook_url = get_secret("MAKE_WEBHOOK_URL")
+feeder_webhook_url = get_secret("MAKE_WEBHOOK_URL_FEEDER")
+switch_webhook_url = get_secret("MAKE_WEBHOOK_URL_SWITCH")
 api_key = get_secret("MAKE_API_KEY")
 api_key_header = get_secret("MAKE_API_KEY_HEADER", "X-API-Key")
 
 with st.sidebar:
     st.header("Nastavení")
+
+    st.subheader("Šelmostroj")
+
+    switch_clicked = st.button(
+        "Spustit šelmostroj",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if switch_clicked:
+        if not switch_webhook_url:
+            st.error("Chybí `MAKE_WEBHOOK_URL_SWITCH` ve Streamlit Secrets.")
+        else:
+            try:
+                switch_response = post_to_make(
+                    webhook_url=switch_webhook_url,
+                    payload=build_switch_payload(),
+                    api_key=api_key,
+                    api_key_header=api_key_header,
+                )
+                st.success(f"Šelmostroj spuštěn. HTTP {switch_response.status_code}.")
+
+                if switch_response.text:
+                    with st.expander("Odpověď šelmostroje"):
+                        st.code(switch_response.text[:5000])
+
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Spuštění šelmostroje selhalo: {exc}")
+
+    st.divider()
 
     include_metadata = st.checkbox(
         "Zabalit data do objektu s metadaty",
@@ -141,13 +181,14 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption("Webhook a API klíč se načítají ze Streamlit Secrets a v aplikaci se nezobrazují.")
-    st.write("Webhook:", "✅ načten" if webhook_url else "❌ chybí")
+    st.caption("Webhooky a API klíč se načítají ze Streamlit Secrets a v aplikaci se nezobrazují.")
+    st.write("Feeder webhook:", "✅ načten" if feeder_webhook_url else "❌ chybí")
+    st.write("Switch webhook:", "✅ načten" if switch_webhook_url else "❌ chybí")
     st.write("API klíč:", "✅ načten" if api_key else "ℹ️ nepoužívá se")
 
-if not webhook_url:
+if not feeder_webhook_url:
     st.error(
-        "Chybí `MAKE_WEBHOOK_URL` ve Streamlit Secrets. "
+        "Chybí `MAKE_WEBHOOK_URL_FEEDER` ve Streamlit Secrets. "
         "Doplňte jej v nastavení aplikace nebo lokálně do `.streamlit/secrets.toml`."
     )
     st.stop()
@@ -202,7 +243,7 @@ col1, col2 = st.columns([1, 3])
 
 with col1:
     send_clicked = st.button(
-        "Odeslat na Make",
+        "Odeslat data na Make",
         type="primary",
     )
 
@@ -211,8 +252,8 @@ if send_clicked:
         st.warning("Vybraný list neobsahuje žádné řádky k odeslání.")
     else:
         try:
-            response = send_to_make(
-                webhook_url=webhook_url,
+            response = post_to_make(
+                webhook_url=feeder_webhook_url,
                 payload=payload,
                 api_key=api_key,
                 api_key_header=api_key_header,
